@@ -3,11 +3,27 @@ import { create } from 'zustand';
 const useAppStore = create((set, get) => ({
   // Core Data
   roadsData: null,
+  roadsGeoJSON: null,
   routeData: null,
+  disasters: [
+    {
+      id: 'flood-hyd-default',
+      type: 'flood',
+      center: [17.3753, 78.4744],
+      radius_km: 2,
+    },
+    {
+      id: 'earthquake-hyd-default',
+      type: 'earthquake',
+      center: [17.3853, 78.4844],
+      radius_km: 5,
+    },
+  ],
   
   // UI States
   loadingMsg: "",
   routingMode: false,
+  showRoadOverlay: true,
   
   // Map Interactions
   routePoints: [],
@@ -15,17 +31,22 @@ const useAppStore = create((set, get) => ({
 
   // Actions
   setRoadsData: (data) => set({ roadsData: data }),
+  setRoadsGeoJSON: (data) => set({ roadsGeoJSON: data }),
   setRouteData: (data) => set({ routeData: data }),
+  setDisasters: (disasters) => set({ disasters }),
   setLoadingMsg: (msg) => set({ loadingMsg: msg }),
   setRoutingMode: (mode) => set({ routingMode: mode, routePoints: mode ? get().routePoints : [] }),
+  setShowRoadOverlay: (showRoadOverlay) => set({ showRoadOverlay }),
   setRoutePoints: (points) => set({ routePoints: points }),
   setMapCenter: (center) => set({ mapCenter: center }),
   
   clearRoutePoints: () => set({ routePoints: [] }),
   resetAll: () => set({
     roadsData: null,
+    roadsGeoJSON: null,
     routeData: null,
     routingMode: false,
+    showRoadOverlay: true,
     routePoints: [],
     loadingMsg: ""
   })

@@ -2,9 +2,9 @@ import React from 'react';
 import useAppStore from '../store/useAppStore';
 
 const Legend = () => {
-  const { roadsData, routeData, resetAll, loadingMsg } = useAppStore();
+  const { roadsData, roadsGeoJSON, routeData, resetAll, loadingMsg } = useAppStore();
 
-  if (!roadsData && !routeData) return null;
+  if (!roadsData && !roadsGeoJSON && !routeData) return null;
 
   return (
     <div className="flex flex-col gap-4 mt-2 border-t border-border pt-4">
@@ -13,16 +13,20 @@ const Legend = () => {
       </span>
       <div className="flex flex-col gap-2">
         <div className="flex items-center gap-3 text-sm text-zinc-300">
-          <div className="w-4 h-4 rounded-[4px] bg-emerald-500"></div> 
-          <span>Accessible Road</span>
+          <div className="w-4 h-4 rounded-[4px] bg-red-500"></div> 
+          <span>Blocked Road</span>
         </div>
         <div className="flex items-center gap-3 text-sm text-zinc-300">
-          <div className="w-4 h-4 rounded-[4px] bg-red-500"></div> 
-          <span>Blocked Road (Damage)</span>
+          <div className="w-4 h-4 rounded-[4px] bg-yellow-400"></div> 
+          <span>Risky Road</span>
+        </div>
+        <div className="flex items-center gap-3 text-sm text-zinc-300">
+          <div className="w-4 h-4 rounded-[4px] bg-emerald-500"></div> 
+          <span>Safe Road</span>
         </div>
         {routeData && (
           <div className="flex items-center gap-3 text-sm text-zinc-300">
-            <div className="w-4 h-4 rounded-[4px] bg-yellow-400"></div> 
+            <div className="w-4 h-4 rounded-[4px] bg-sky-400"></div> 
             <span>Safe Evacuation Route</span>
           </div>
         )}

@@ -10,7 +10,7 @@ const MapComponent = () => {
   const map = useRef(null);
   
   const { 
-    roadsData, routeData, routingMode, setRoutingMode, 
+    roadsData, roadsGeoJSON, routeData, routingMode, showRoadOverlay, setRoutingMode, 
     routePoints, setRoutePoints, setRouteData, 
     setMapCenter,
     setLoadingMsg
@@ -35,33 +35,74 @@ const MapComponent = () => {
     });
 
     map.current.on('style.load', () => {
-      // Roads layer setup
-      map.current.addSource('roads', {
+      const {
+        roadsData: initialRoadsData,
+        roadsGeoJSON: initialRoadsGeoJSON,
+        routeData: initialRouteData,
+        showRoadOverlay: initialShowRoadOverlay,
+      } = useAppStore.getState();
+
+      // Base road network source
+      map.current.addSource('roads-base', {
         type: 'geojson',
-        data: { type: 'FeatureCollection', features: [] }
+        data: initialRoadsData || { type: 'FeatureCollection', features: [] }
       });
       map.current.addLayer({
-        id: 'roads-layer',
+        id: 'roads-base-layer',
         type: 'line',
-        source: 'roads',
+        source: 'roads-base',
         layout: { 'line-join': 'round', 'line-cap': 'round' },
+        paint: {
+          'line-color': '#64748b',
+          'line-width': 2,
+          'line-opacity': 0.35,
+          'line-width-transition': { duration: 250 },
+          'line-opacity-transition': { duration: 250 }
+        }
+      });
+
+      // Status overlay source
+      map.current.addSource('roads-overlay', {
+        type: 'geojson',
+        data: initialRoadsGeoJSON || { type: 'FeatureCollection', features: [] }
+      });
+      map.current.addLayer({
+        id: 'roads-overlay-layer',
+        type: 'line',
+        source: 'roads-overlay',
+        layout: {
+          'line-join': 'round',
+          'line-cap': 'round',
+          visibility: initialShowRoadOverlay ? 'visible' : 'none'
+        },
         paint: {
           'line-color': [
             'match',
             ['get', 'status'],
-            'accessible', '#10b981', // emerald-500
-            'blocked', '#ef4444',    // red-500
-            '#94a3b8' // bg-slate-400
+            'blocked', '#ef4444',
+            'risky', '#facc15',
+            'safe', '#22c55e',
+            '#94a3b8'
           ],
-          'line-width': 3,
-          'line-opacity': 0.8
+          'line-width': [
+            'match',
+            ['get', 'status'],
+            'blocked', 5,
+            'risky', 4,
+            'safe', 3,
+            2
+          ],
+          'line-opacity': 0.92,
+          'line-color-transition': { duration: 300 },
+          'line-width-transition': { duration: 300 },
+          'line-opacity-transition': { duration: 300 }
         }
       });
 
       // Route layer setup
       map.current.addSource('route', {
         type: 'geojson',
-        data: { type: 'FeatureCollection', features: [] }
+        data: initialRouteData || { type: 'FeatureCollection', features: [] }
       });
       map.current.addLayer({
         id: 'route-layer',
@@ -69,7 +110,7 @@ const MapComponent = () => {
         source: 'route',
         layout: { 'line-join': 'round', 'line-cap': 'round' },
         paint: {
-          'line-color': '#facc15', // yellow-400
+          'line-color': '#38bdf8',
           'line-width': 6,
           'line-opacity': 0.9,
           'line-blur': 1,
@@ -86,14 +127,33 @@ const MapComponent = () => {
     });
   }, [setMapCenter]);
 
-  // Sync roads data to map
+  // Sync base roads to map
   useEffect(() => {
     if (!map.current || !map.current.isStyleLoaded()) return;
-    const source = map.current.getSource('roads');
+    const source = map.current.getSource('roads-base');
     if (source) {
       source.setData(roadsData || { type: 'FeatureCollection', features: [] });
     }
   }, [roadsData]);
+
+  // Sync status overlay to map
+  useEffect(() => {
+    if (!map.current || !map.current.isStyleLoaded()) return;
+    const source = map.current.getSource('roads-overlay');
+    if (source) {
+      source.setData(roadsGeoJSON || { type: 'FeatureCollection', features: [] });
+    }
+  }, [roadsGeoJSON]);
+
+  // Toggle overlay visibility
+  useEffect(() => {
+    if (!map.current || !map.current.isStyleLoaded() || !map.current.getLayer('roads-overlay-layer')) return;
+    map.current.setLayoutProperty(
+      'roads-overlay-layer',
+      'visibility',
+      showRoadOverlay ? 'visible' : 'none'
+    );
+  }, [showRoadOverlay]);
 
   // Sync route data to map
   useEffect(() => {
@@ -156,7 +216,7 @@ const MapComponent = () => {
     }
   }, [routePoints]);
 
-  return <div ref={mapContainer} className="absolute inset-0 w-full h-full" />;
+  return <div ref={mapContainer} className="absolute inset-0 h-full w-full transition-opacity duration-300" />;
 };
 
 export default MapComponent;

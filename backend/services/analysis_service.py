@@ -1,187 +1,208 @@
-"""
-AI-Powered Road Damage Analysis Service
+from __future__ import annotations
 
-Uses Google Gemini Vision API to analyze satellite imagery and determine
-road accessibility. Replaces the random simulation with real AI inference.
-"""
-
-import os
-import json
-import base64
 import logging
-from google import genai
-from services.satellite_service import fetch_satellite_image, get_tile_configs
+import math
+from typing import Any, Literal
 
 logger = logging.getLogger(__name__)
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+RoadSeverity = Literal["safe", "risky", "blocked"]
+RoadStatus = dict[str, str]
+RoadFeature = dict[str, Any]
+Disaster = dict[str, Any]
+
+_STATUS_PRIORITY: dict[RoadSeverity, int] = {
+    "safe": 0,
+    "risky": 1,
+    "blocked": 2,
+}
 
 
-def _build_road_list_for_prompt(features: list, road_indices: list) -> str:
+def _haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """
-    Build a numbered list of road names/types for the Gemini prompt,
-    so the AI can reference specific roads in its response.
+    Return the great-circle distance between two points in kilometers.
     """
-    lines = []
-    for idx in road_indices:
-        feat = features[idx]
-        props = feat.get("properties", {})
-        name = props.get("name", "Unknown Road")
-        highway_type = props.get("highway", "unknown")
-        lines.append(f"  Road #{idx}: \"{name}\" (type: {highway_type})")
-    return "\n".join(lines)
+    earth_radius_km = 6371.0
+    lat1_rad = math.radians(lat1)
+    lon1_rad = math.radians(lon1)
+    lat2_rad = math.radians(lat2)
+    lon2_rad = math.radians(lon2)
+
+    delta_lat = lat2_rad - lat1_rad
+    delta_lon = lon2_rad - lon1_rad
+
+    a = (
+        math.sin(delta_lat / 2) ** 2
+        + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(delta_lon / 2) ** 2
+    )
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return earth_radius_km * c
 
 
-def _analyze_tile_with_gemini(image_bytes: bytes, road_descriptions: str,
-                              road_indices: list) -> dict:
+def _build_disaster_bounds(lat: float, lon: float, radius_km: float) -> tuple[float, float, float, float]:
     """
-    Send a satellite image + road descriptions to Gemini Vision API.
-    Returns a mapping of road_index -> {status, confidence, damage_type}.
+    Create a coarse bounding box in lat/lon degrees for fast pre-filtering.
     """
-    client = genai.Client(api_key=GEMINI_API_KEY)
+    lat_delta = radius_km / 111.0
+    cos_lat = max(math.cos(math.radians(lat)), 0.01)
+    lon_delta = radius_km / (111.0 * cos_lat)
+    return (
+        lat - lat_delta,
+        lon - lon_delta,
+        lat + lat_delta,
+        lon + lon_delta,
+    )
 
-    # Encode image as base64 for the API
-    image_b64 = base64.b64encode(image_bytes).decode("utf-8")
 
-    prompt = f"""You are an AI disaster response analyst examining satellite imagery to assess road conditions after a natural disaster.
+def _extract_road_points(road: RoadFeature) -> list[tuple[float, float]]:
+    """
+    Convert GeoJSON coordinates into a list of (lat, lon) pairs.
+    Current OSM service stores coordinates as [lon, lat].
+    """
+    geometry = road.get("geometry", {})
+    coordinates = geometry.get("coordinates", [])
+    points: list[tuple[float, float]] = []
 
-Analyze this satellite image and determine the accessibility status of each road listed below.
+    for coordinate in coordinates:
+        if not isinstance(coordinate, (list, tuple)) or len(coordinate) < 2:
+            continue
+        lon, lat = coordinate[0], coordinate[1]
+        points.append((float(lat), float(lon)))
 
-**Roads in this area:**
-{road_descriptions}
+    return points
 
-**For each road, evaluate:**
-1. Is there visible flooding, water coverage, or waterlogging on or near the road?
-2. Is there debris, fallen trees, or structural collapse blocking the road?
-3. Are there landslide indicators (earth/rock movement) covering the road?
-4. Does the road surface appear intact and passable?
 
-**IMPORTANT:** Respond ONLY with a valid JSON array. No markdown, no explanation. Each element must have:
-- "road_id": the road number (integer)
-- "status": "blocked" or "accessible"  
-- "confidence": a float between 0.0 and 1.0
-- "damage_type": one of "flooding", "debris", "collapse", "landslide", "none"
+def _compute_road_bbox(points: list[tuple[float, float]]) -> tuple[float, float, float, float] | None:
+    if not points:
+        return None
 
-Example format:
-[{{"road_id": 0, "status": "accessible", "confidence": 0.85, "damage_type": "none"}}]
+    latitudes = [point[0] for point in points]
+    longitudes = [point[1] for point in points]
+    return (
+        min(latitudes),
+        min(longitudes),
+        max(latitudes),
+        max(longitudes),
+    )
 
-Analyze realistically based on what you observe in the satellite image. In post-disaster scenarios approximately 20-40% of roads may be affected. Look carefully for signs of damage.
-"""
 
-    try:
-        response = client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=[
-                {
-                    "parts": [
-                        {"text": prompt},
-                        {
-                            "inline_data": {
-                                "mime_type": "image/png",
-                                "data": image_b64
-                            }
-                        }
-                    ]
-                }
-            ]
+def _bbox_intersects(
+    road_bbox: tuple[float, float, float, float] | None,
+    disaster_bbox: tuple[float, float, float, float],
+) -> bool:
+    if road_bbox is None:
+        return False
+
+    road_min_lat, road_min_lon, road_max_lat, road_max_lon = road_bbox
+    dis_min_lat, dis_min_lon, dis_max_lat, dis_max_lon = disaster_bbox
+
+    return not (
+        road_max_lat < dis_min_lat
+        or road_min_lat > dis_max_lat
+        or road_max_lon < dis_min_lon
+        or road_min_lon > dis_max_lon
+    )
+
+
+def _get_road_id(road: RoadFeature, fallback_index: int) -> str:
+    properties = road.get("properties", {})
+    for key in ("road_id", "id", "osmid", "@id"):
+        value = properties.get(key, road.get(key))
+        if value is not None:
+            return str(value)
+    return f"road-{fallback_index}"
+
+
+def _determine_status_for_disaster(
+    points: list[tuple[float, float]],
+    disaster_center: tuple[float, float],
+    radius_km: float,
+) -> RoadSeverity:
+    near_radius_km = radius_km + 1.0
+    center_lat, center_lon = disaster_center
+    current_status: RoadSeverity = "safe"
+
+    for point_lat, point_lon in points:
+        distance_km = _haversine_distance(point_lat, point_lon, center_lat, center_lon)
+        if distance_km <= radius_km:
+            return "blocked"
+        if distance_km <= near_radius_km:
+            current_status = "risky"
+
+    return current_status
+
+
+def _compute_road_status(roads: list[RoadFeature], disasters: list[Disaster]) -> list[RoadStatus]:
+    """
+    Compute deterministic road status from road geometry and disaster radii.
+    A road is affected if any point in its LineString enters the disaster radius.
+    """
+    normalized_disasters: list[dict[str, Any]] = []
+    for disaster in disasters:
+        center = disaster.get("center", [])
+        if len(center) < 2:
+            logger.warning("Skipping disaster with invalid center: %s", disaster)
+            continue
+
+        center_lat = float(center[0])
+        center_lon = float(center[1])
+        radius_km = max(float(disaster.get("radius_km", 0.0)), 0.0)
+        near_radius_km = radius_km + 1.0
+
+        normalized_disasters.append(
+            {
+                "type": disaster.get("type", "unknown"),
+                "center": (center_lat, center_lon),
+                "radius_km": radius_km,
+                "near_radius_km": near_radius_km,
+                "bbox": _build_disaster_bounds(center_lat, center_lon, near_radius_km),
+            }
         )
 
-        response_text = response.text.strip()
-        logger.info(f"Gemini raw response: {response_text[:500]}")
+    results: list[RoadStatus] = []
+    for index, road in enumerate(roads):
+        road_id = _get_road_id(road, index)
+        points = _extract_road_points(road)
+        road_bbox = _compute_road_bbox(points)
+        status: RoadSeverity = "safe"
 
-        # Clean up response - remove markdown code fences if present
-        if response_text.startswith("```"):
-            # Remove opening fence
-            first_newline = response_text.index("\n")
-            response_text = response_text[first_newline + 1:]
-            # Remove closing fence
-            if response_text.endswith("```"):
-                response_text = response_text[:-3].strip()
+        if points and normalized_disasters:
+            for disaster in normalized_disasters:
+                if not _bbox_intersects(road_bbox, disaster["bbox"]):
+                    continue
 
-        results = json.loads(response_text)
+                disaster_status = _determine_status_for_disaster(
+                    points=points,
+                    disaster_center=disaster["center"],
+                    radius_km=disaster["radius_km"],
+                )
+                if _STATUS_PRIORITY[disaster_status] > _STATUS_PRIORITY[status]:
+                    status = disaster_status
+                if status == "blocked":
+                    break
 
-        # Build mapping
-        analysis_map = {}
-        for item in results:
-            road_id = item.get("road_id")
-            if road_id is not None:
-                analysis_map[road_id] = {
-                    "status": item.get("status", "accessible"),
-                    "confidence": item.get("confidence", 0.5),
-                    "damage_type": item.get("damage_type", "none")
-                }
+        results.append({"road_id": road_id, "status": status})
 
-        return analysis_map
-
-    except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse Gemini response as JSON: {e}")
-        logger.error(f"Response was: {response_text[:1000]}")
-        # Fallback: mark all as accessible with low confidence
-        return {idx: {"status": "accessible", "confidence": 0.3, "damage_type": "none"}
-                for idx in road_indices}
-    except Exception as e:
-        logger.error(f"Gemini API error: {e}")
-        raise
+    return results
 
 
-def analyze_roads_with_ai(geojson: dict) -> dict:
+def compute_geojson_road_status(geojson: dict[str, Any], disasters: list[Disaster]) -> dict[str, Any]:
     """
-    Main analysis function. Orchestrates the end-to-end AI pipeline:
-    1. Group roads into spatial tiles
-    2. Fetch satellite imagery for each tile
-    3. Send to Gemini Vision for analysis
-    4. Map AI results back to GeoJSON features
+    Apply computed road status back onto the incoming GeoJSON features.
     """
     features = geojson.get("features", [])
-    if not features:
-        return geojson
+    statuses = _compute_road_status(features, disasters)
+    status_by_road_id = {item["road_id"]: item["status"] for item in statuses}
 
-    logger.info(f"Starting AI analysis of {len(features)} road segments")
-
-    # Step 1: Group roads into spatial tiles
-    tiles = get_tile_configs(geojson)
-    logger.info(f"Split roads into {len(tiles)} spatial tiles")
-
-    # Step 2 & 3: For each tile, fetch satellite image and analyze
-    all_results = {}
-    for i, tile in enumerate(tiles):
-        logger.info(f"Processing tile {i + 1}/{len(tiles)} with {len(tile['road_indices'])} roads")
-
-        # Fetch satellite image for this tile
-        image_bytes = fetch_satellite_image(
-            center_lat=tile["center_lat"],
-            center_lon=tile["center_lon"],
-            zoom=tile["zoom"]
-        )
-
-        # Build road descriptions for the prompt
-        road_descriptions = _build_road_list_for_prompt(features, tile["road_indices"])
-
-        # Analyze with Gemini
-        tile_results = _analyze_tile_with_gemini(
-            image_bytes=image_bytes,
-            road_descriptions=road_descriptions,
-            road_indices=tile["road_indices"]
-        )
-        all_results.update(tile_results)
-
-    # Step 4: Map results back to GeoJSON features
-    for i, feature in enumerate(features):
+    for index, feature in enumerate(features):
         if "properties" not in feature:
             feature["properties"] = {}
 
-        if i in all_results:
-            result = all_results[i]
-            feature["properties"]["status"] = result["status"]
-            feature["properties"]["confidence"] = result["confidence"]
-            feature["properties"]["damage_type"] = result["damage_type"]
-        else:
-            # Roads not analyzed default to accessible with low confidence
-            feature["properties"]["status"] = "accessible"
-            feature["properties"]["confidence"] = 0.3
-            feature["properties"]["damage_type"] = "none"
+        road_id = _get_road_id(feature, index)
+        feature["properties"]["road_id"] = road_id
+        feature["properties"]["status"] = status_by_road_id.get(road_id, "safe")
 
-    blocked_count = sum(1 for f in features if f["properties"]["status"] == "blocked")
-    logger.info(f"AI analysis complete: {blocked_count}/{len(features)} roads blocked")
-
-    return geojson
+    return {
+        "type": geojson.get("type", "FeatureCollection"),
+        "features": features,
+    }

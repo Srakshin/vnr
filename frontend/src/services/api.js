@@ -14,6 +14,11 @@ export const analyzeDisaster = async (roadsData) => {
   return res.data;
 };
 
+export const fetchRoadStatus = async (payload) => {
+  const res = await axios.post(`${API_BASE}/roads/status`, payload);
+  return res.data;
+};
+
 export const fetchOptimalRoute = async (startLngLat, endLngLat) => {
   const res = await axios.get(`${API_BASE}/route`, {
     params: {
