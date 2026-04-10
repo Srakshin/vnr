@@ -54,3 +54,9 @@ There is currently no testing framework configured in this repository. Ensure ma
 ## Commit & Pull Request Guidelines
 - Follow descriptive commit message patterns (e.g., `Refactor frontend UI to Tailwind v4 and Zustand`).
 - Avoid "temporary commit" or "checkout" messages in the final history.
+
+
+
+
+
+86
