@@ -1,7 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import mapboxgl from 'mapbox-gl';
 import useAppStore from '../store/useAppStore';
-import { fetchOptimalRoute } from '../services/api';
+import { fetchSmartRoute } from '../services/api';
 
 mapboxgl.accessToken = import.meta.env.VITE_MAPBOX_TOKEN;
 
@@ -10,8 +10,19 @@ const MapComponent = () => {
   const map = useRef(null);
   
   const { 
-    roadsData, roadsGeoJSON, routeData, routingMode, showRoadOverlay, setRoutingMode, 
-    routePoints, setRoutePoints, setRouteData, 
+    roadsData,
+    roadsGeoJSON,
+    routeData,
+    smartRouteGeoJSON,
+    routingMode,
+    showRoadOverlay,
+    setRoutingMode, 
+    routePoints,
+    setRoutePoints,
+    setRouteData,
+    setSmartRouteGeoJSON,
+    setSmartRouteMetadata,
+    setSmartRouteWarning,
     setMapCenter,
     setLoadingMsg
   } = useAppStore();
@@ -39,6 +50,7 @@ const MapComponent = () => {
         roadsData: initialRoadsData,
         roadsGeoJSON: initialRoadsGeoJSON,
         routeData: initialRouteData,
+        smartRouteGeoJSON: initialSmartRouteGeoJSON,
         showRoadOverlay: initialShowRoadOverlay,
       } = useAppStore.getState();
 
@@ -116,6 +128,25 @@ const MapComponent = () => {
           'line-blur': 1,
         }
       });
+
+      map.current.addSource('smart-route', {
+        type: 'geojson',
+        data: initialSmartRouteGeoJSON || { type: 'FeatureCollection', features: [] }
+      });
+      map.current.addLayer({
+        id: 'smart-route-layer',
+        type: 'line',
+        source: 'smart-route',
+        layout: { 'line-join': 'round', 'line-cap': 'round' },
+        paint: {
+          'line-color': '#6366f1',
+          'line-width': 7,
+          'line-opacity': 0.95,
+          'line-blur': 0.6,
+          'line-color-transition': { duration: 250 },
+          'line-width-transition': { duration: 250 }
+        }
+      });
     });
 
     map.current.on('move', () => {
@@ -164,11 +195,20 @@ const MapComponent = () => {
     }
   }, [routeData]);
 
+  // Sync smart route data to map
+  useEffect(() => {
+    if (!map.current || !map.current.isStyleLoaded()) return;
+    const source = map.current.getSource('smart-route');
+    if (source) {
+      source.setData(smartRouteGeoJSON || { type: 'FeatureCollection', features: [] });
+    }
+  }, [smartRouteGeoJSON]);
+
   // Handle map clicks for routing
   useEffect(() => {
     if (!map.current) return;
     
-    const clickHandler = async (e) => {
+    const clickHandler = (e) => {
       if (!routingMode) return;
       
       const pt = [e.lngLat.lng, e.lngLat.lat];
@@ -176,6 +216,17 @@ const MapComponent = () => {
       const currentPoints = useAppStore.getState().routePoints;
       
       if (currentPoints.length === 0) {
+        setSmartRouteGeoJSON(null);
+        setSmartRouteMetadata(null);
+        setSmartRouteWarning("");
+        setRouteData(null);
+        if (startMarkerRef.current) {
+          startMarkerRef.current.remove();
+        }
+        if (endMarkerRef.current) {
+          endMarkerRef.current.remove();
+        }
+
         // Create start marker
         startMarkerRef.current = new mapboxgl.Marker({ color: '#10b981' })
           .setLngLat(pt)
@@ -189,24 +240,21 @@ const MapComponent = () => {
         
         const newPoints = [currentPoints[0], pt];
         setRoutePoints(newPoints);
-        
-        // Trigger fetch route immediately
-        setLoadingMsg("Calculating safe route...");
-        try {
-          const rData = await fetchOptimalRoute(newPoints[0], newPoints[1]);
-          setRouteData(rData);
-          setLoadingMsg("");
-        } catch (err) {
-          console.error(err);
-          setLoadingMsg("Failed to calculate route");
-        }
         setRoutingMode(false); // disable point picking
       }
     };
 
     map.current.on('click', clickHandler);
     return () => map.current.off('click', clickHandler);
-  }, [routingMode, setRoutePoints, setLoadingMsg, setRouteData, setRoutingMode]);
+  }, [
+    routingMode,
+    setRouteData,
+    setRoutePoints,
+    setRoutingMode,
+    setSmartRouteGeoJSON,
+    setSmartRouteMetadata,
+    setSmartRouteWarning,
+  ]);
 
   // Cleanup markers on reset
   useEffect(() => {
@@ -216,7 +264,55 @@ const MapComponent = () => {
     }
   }, [routePoints]);
 
-  return <div ref={mapContainer} className="absolute inset-0 h-full w-full transition-opacity duration-300" />;
+  const canRequestSmartRoute = routePoints.length === 2 && !!roadsGeoJSON && !routingMode;
+
+  const handleSmartRoute = async () => {
+    if (!canRequestSmartRoute) {
+      return;
+    }
+
+    try {
+      setLoadingMsg("Calculating smart route...");
+      setSmartRouteWarning("");
+      const response = await fetchSmartRoute({
+        roads: roadsGeoJSON,
+        start: routePoints[0],
+        end: routePoints[1],
+      });
+
+      setSmartRouteGeoJSON(response.route);
+      setSmartRouteMetadata(response.metadata);
+      setSmartRouteWarning(response.metadata?.warning || "");
+      setRouteData(null);
+      setLoadingMsg("");
+    } catch (err) {
+      console.error(err);
+      setSmartRouteGeoJSON(null);
+      setSmartRouteMetadata(null);
+      setSmartRouteWarning(err?.response?.data?.detail || "Failed to calculate smart route");
+      setLoadingMsg("Failed to calculate smart route");
+    }
+  };
+
+  return (
+    <>
+      <div ref={mapContainer} className="absolute inset-0 h-full w-full transition-opacity duration-300" />
+      <div className="pointer-events-none absolute right-6 bottom-6 z-20 flex flex-col items-end gap-3">
+        <button
+          type="button"
+          className={`pointer-events-auto rounded-2xl border px-5 py-3 text-sm font-semibold shadow-2xl backdrop-blur-xl transition-all ${
+            canRequestSmartRoute
+              ? 'border-indigo-400/40 bg-indigo-500/20 text-indigo-100 hover:bg-indigo-500/30'
+              : 'border-white/10 bg-zinc-900/70 text-zinc-500'
+          }`}
+          disabled={!canRequestSmartRoute}
+          onClick={handleSmartRoute}
+        >
+          Smart Route
+        </button>
+      </div>
+    </>
+  );
 };
 
 export default MapComponent;

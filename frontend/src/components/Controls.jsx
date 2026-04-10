@@ -7,6 +7,7 @@ const Controls = () => {
   const { 
     roadsData, setRoadsData,
     roadsGeoJSON, setRoadsGeoJSON,
+    setSmartRouteGeoJSON, setSmartRouteMetadata, setSmartRouteWarning,
     disasters, setDisasters,
     loadingMsg, setLoadingMsg,
     routingMode, setRoutingMode,
@@ -20,6 +21,9 @@ const Controls = () => {
       const data = await fetchLocalRoads(mapCenter.lat, mapCenter.lng);
       setRoadsData(data);
       setRoadsGeoJSON(null);
+      setSmartRouteGeoJSON(null);
+      setSmartRouteMetadata(null);
+      setSmartRouteWarning("");
     } catch (err) {
       console.error(err);
     } finally {
@@ -36,6 +40,9 @@ const Controls = () => {
         disasters,
       });
       setRoadsGeoJSON(analyzedData);
+      setSmartRouteGeoJSON(null);
+      setSmartRouteMetadata(null);
+      setSmartRouteWarning("");
     } catch (err) {
       console.error(err);
     } finally {
@@ -67,6 +74,9 @@ const Controls = () => {
             disasters,
           });
           setRoadsGeoJSON(analyzedData);
+          setSmartRouteGeoJSON(null);
+          setSmartRouteMetadata(null);
+          setSmartRouteWarning("");
         } catch (err) {
           console.error(err);
         } finally {
@@ -78,7 +88,16 @@ const Controls = () => {
     }, 300);
 
     return () => window.clearTimeout(timeoutId);
-  }, [disasters, hasOverlay, roadsData, setLoadingMsg, setRoadsGeoJSON]);
+  }, [
+    disasters,
+    hasOverlay,
+    roadsData,
+    setLoadingMsg,
+    setRoadsGeoJSON,
+    setSmartRouteGeoJSON,
+    setSmartRouteMetadata,
+    setSmartRouteWarning,
+  ]);
 
   return (
     <div className="flex flex-col gap-5 pt-4 border-t border-border mt-2">
@@ -150,10 +169,10 @@ const Controls = () => {
             : 'bg-zinc-800/80 border-border hover:bg-zinc-700 text-zinc-100'
           } disabled:opacity-50 disabled:cursor-not-allowed`}
           onClick={() => setRoutingMode(!routingMode)}
-          disabled={!roadsData || !!loadingMsg}
+          disabled={!roadsGeoJSON || !!loadingMsg}
         >
           <Navigation size={18} />
-          {routingMode ? "Click Map for Start Point..." : "Find Safe Evacuation Route"}
+          {routingMode ? "Click Map for Start / End..." : "Select Smart Route Points"}
         </button>
       </div>
 

@@ -30,3 +30,8 @@ export const fetchOptimalRoute = async (startLngLat, endLngLat) => {
   });
   return res.data;
 };
+
+export const fetchSmartRoute = async (payload) => {
+  const res = await axios.post(`${API_BASE}/route/smart`, payload);
+  return res.data;
+};
